@@ -4,55 +4,33 @@ const BACKEND_URL = "http://localhost:8080/api";
 
 export interface QuizSessionStartResponse {
   sessionId: string;
-  firstQuiz: QuizData;
-  remaining: number;
 }
 
-// Client-side cache for the current session
-let currentSessionQuestions: QuizData[] = [];
-let currentSessionIndex = 0;
-let currentSessionId: string | null = null;
+// export const getQuizStreamUrl = ... (removed duplicate)
+
+export interface QuizSessionStartResponse {
+  sessionId: string;
+}
 
 export const startQuizSession = async (topic: string, section: SectionType = 'STRUCTURE', count: number = 3, skillId?: string): Promise<QuizSessionStartResponse> => {
   try {
-    // Use the new Hybrid endpoint
-    const response = await fetch(`${BACKEND_URL}/questions/hybrid`, {
+    const response = await fetch(`${BACKEND_URL}/quiz/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        skillId: skillId || "", // If no skillId, backend might fall back or error. Ideally pass a valid ID.
+        topic: skillId || topic, // Use skillId as topic if available to trigger specific prompt strategies
         section: section,
-        count: count,
-        userId: "guest"
+        count: count
       })
     });
 
     if (!response.ok) throw new Error(await response.text());
 
     const result = await response.json();
-    // Maps backend questions to QuizData
-    currentSessionQuestions = result.questions.map((q: any) => ({
-      type: q.type || 'sentence_completion',
-      question: q.text,
-      options: q.options,
-      correctAnswer: q.correctAnswer,
-      explanation: q.explanation,
-      section: q.section,
-      source: q.source,
-      // Map other fields as needed
-    }));
-
-    currentSessionId = result.sessionId || "local-session-" + Date.now();
-    currentSessionIndex = 0;
-
-    if (currentSessionQuestions.length === 0) {
-      throw new Error("No questions returned from backend");
-    }
+    // The backend now returns { sessionId, status: "started" }
 
     return {
-      sessionId: currentSessionId!,
-      firstQuiz: currentSessionQuestions[0],
-      remaining: currentSessionQuestions.length - 1
+      sessionId: result.sessionId
     };
 
   } catch (error) {
@@ -63,15 +41,36 @@ export const startQuizSession = async (topic: string, section: SectionType = 'ST
 
 export const getNextQuiz = async (sessionId: string): Promise<QuizData | null> => {
   try {
-    // For now, we use local cache. In a real stateless flow we might ask backend for "next" 
-    // but the hybrid endpoint returned a batch.
-    if (sessionId === currentSessionId) {
-      currentSessionIndex++;
-      if (currentSessionIndex < currentSessionQuestions.length) {
-        return currentSessionQuestions[currentSessionIndex];
-      }
+    const response = await fetch(`${BACKEND_URL}/quiz/next?sessionId=${sessionId}`, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" }
+    });
+
+    if (!response.ok) throw new Error(await response.text());
+
+    const result = await response.json();
+
+    // Check for "done" signal
+    if (result.done) {
+      return null;
     }
-    return null;
+
+    const mapQuiz = (q: any): QuizData => ({
+      id: q.id,
+      type: q.type || 'sentence_completion',
+      question: q.text,
+      options: q.options,
+      correctAnswer: q.correctAnswer,
+      explanation: q.explanation,
+      section: q.section,
+      source: q.source,
+      patternTip: q.patternTip,
+      hints: q.hints,
+      referencedText: q.referencedText,
+      passageText: q.passageText
+    });
+
+    return mapQuiz(result);
   } catch (error) {
     console.error("Error fetching next quiz:", error);
     return null;
@@ -81,5 +80,55 @@ export const getNextQuiz = async (sessionId: string): Promise<QuizData | null> =
 // Legacy support (calls start session for 1 quiz)
 export const generateQuizQuestion = async (topic: string, section: SectionType = 'STRUCTURE'): Promise<QuizData> => {
   const session = await startQuizSession(topic, section, 1);
-  return session.firstQuiz;
+  const quiz = await getNextQuiz(session.sessionId);
+  if (!quiz) throw new Error("Failed to generate quiz");
+  return quiz;
+};
+export const getQuizStreamUrl = (sessionId: string): string => {
+  return `${BACKEND_URL}/quiz/stream?sessionId=${sessionId}`;
+};
+
+export const submitQuiz = async (sessionId: string, answers: Record<string, string>): Promise<{ status: string; score: number }> => {
+  const response = await fetch(`${BACKEND_URL}/quiz/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, answers })
+  });
+
+  if (!response.ok) throw new Error(await response.text());
+  return await response.json();
+};
+
+export const getQuizResult = async (sessionId: string): Promise<any> => {
+  const response = await fetch(`${BACKEND_URL}/quiz/results?sessionId=${sessionId}`, {
+    method: "GET",
+    headers: { "Content-Type": "application/json" }
+  });
+
+  if (!response.ok) throw new Error(await response.text());
+
+  const result = await response.json();
+
+  // Map questions for consistency if needed, but backend result should mirror proper structure
+  // Need to ensure result.questions are mapped correctly to QuizData if keys differ
+  // Backend QuizResponse keys match QuizData largely
+  // Mapping logic:
+  if (result.questions) {
+    result.questions = result.questions.map((q: any) => ({
+      id: q.id,
+      type: q.type || 'sentence_completion',
+      question: q.text,
+      options: q.options,
+      correctAnswer: q.correctAnswer,
+      explanation: q.explanation,
+      section: q.section,
+      source: q.source,
+      patternTip: q.patternTip,
+      hints: q.hints,
+      referencedText: q.referencedText,
+      passageText: q.passageText
+    }));
+  }
+
+  return result;
 };

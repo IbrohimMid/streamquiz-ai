@@ -94,9 +94,9 @@ export const QuizViewReading: React.FC<QuizViewReadingProps> = ({
                 <div className={`${mobileTab === 'passage' ? 'hidden' : 'block'} md:block h-full overflow-hidden flex flex-col`}>
                     <div className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden flex flex-col h-full">
                         {/* Question Text */}
-                        <div className="p-8 border-b border-slate-200 bg-white flex-shrink-0">
+                        <div className="p-6 border-b border-slate-200 bg-white flex-shrink-0">
                             <div className="mb-4 flex items-center space-x-2">
-                                <span className="inline-block px-2 py-1 text-xs font-bold rounded uppercase tracking-wide bg-blue-50 text-blue-600">
+                                <span className="inline-block px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wide bg-blue-50 text-blue-600">
                                     Reading Comprehension
                                 </span>
                                 {currentQuestion.source === 'ETS' || currentQuestion.source === 'USER' ? (
@@ -106,7 +106,7 @@ export const QuizViewReading: React.FC<QuizViewReadingProps> = ({
                                 )}
                             </div>
 
-                            <div className="text-left font-serif text-xl font-medium text-slate-800 leading-relaxed">
+                            <div className="text-left font-serif text-lg font-medium text-slate-800 leading-relaxed">
                                 {currentQuestion.question}
                                 {hints.length > 0 && !showExplanation && (
                                     <div className="mt-4">
@@ -133,14 +133,14 @@ export const QuizViewReading: React.FC<QuizViewReadingProps> = ({
                         </div>
 
                         {/* Options */}
-                        <div className="p-8 bg-white flex-1 overflow-y-auto">
+                        <div className="p-6 bg-white flex-1 overflow-y-auto">
                             <div className="grid gap-4 grid-cols-1">
                                 {currentQuestion.options.map((opt) => {
                                     const isSelected = selectedAnswer === opt.key;
                                     const isTheCorrectOne = currentQuestion.correctAnswer === opt.key;
                                     const isEliminated = eliminatedKeys.includes(opt.key);
 
-                                    let btnClass = "relative justify-start text-left h-auto py-3 px-4 border-slate-200 hover:border-blue-600 group";
+                                    let btnClass = "relative justify-start text-left h-auto py-2.5 px-3 border-slate-200 hover:border-blue-600 group";
                                     if (showExplanation) {
                                         if (isTheCorrectOne) btnClass = "justify-start text-left h-auto py-3 px-4 bg-blue-50 border-blue-600 text-blue-800 ring-1 ring-blue-600";
                                         else if (isSelected && !isTheCorrectOne) btnClass = "justify-start text-left h-auto py-3 px-4 bg-white border-orange-500 text-orange-800";
@@ -158,10 +158,10 @@ export const QuizViewReading: React.FC<QuizViewReadingProps> = ({
                                             disabled={showExplanation}
                                             className={`flex items-center rounded-lg border transition-all ${btnClass}`}
                                         >
-                                            <span className={`flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full bg-blue-50 text-slate-500 font-bold text-sm mr-3 border border-slate-200 ${isEliminated ? 'opacity-50' : ''}`}>
+                                            <span className={`flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-blue-50 text-slate-500 font-bold text-xs mr-3 border border-slate-200 ${isEliminated ? 'opacity-50' : ''}`}>
                                                 {opt.key}
                                             </span>
-                                            <span className={`text-lg flex-1 ${isEliminated ? 'line-through decoration-slate-400 decoration-2' : 'text-slate-800'}`}>
+                                            <span className={`text-base flex-1 ${isEliminated ? 'line-through decoration-slate-400 decoration-2' : 'text-slate-800'}`}>
                                                 {opt.text}
                                             </span>
                                             {!showExplanation && (

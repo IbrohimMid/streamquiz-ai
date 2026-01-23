@@ -53,19 +53,36 @@ func Migrate() {
 			section TEXT NOT NULL,
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 		);`,
-		`CREATE TABLE IF NOT EXISTS questions (
-			id TEXT PRIMARY KEY,
-			skill_id TEXT NOT NULL,
-			section TEXT NOT NULL,
-			question_type TEXT,
-			text TEXT NOT NULL,
-			options JSONB NOT NULL,
-			correct_answer TEXT NOT NULL,
-			explanation TEXT,
-			source TEXT DEFAULT 'ai',
-			difficulty TEXT DEFAULT 'medium',
-			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		// New Schema
+		`CREATE TABLE IF NOT EXISTS passages (
+		    id TEXT PRIMARY KEY,
+		    text TEXT NOT NULL,
+		    topic TEXT,
+		    created_at TIMESTAMPTZ DEFAULT NOW()
 		);`,
+		`CREATE TABLE IF NOT EXISTS question_bank (
+		    id TEXT PRIMARY KEY,
+		    skill_id TEXT NOT NULL,
+		    section TEXT,
+		    question_text TEXT NOT NULL,
+		    options JSONB,
+		    correct_answer TEXT,
+		    explanation TEXT,
+		    source TEXT,
+		    passage_id TEXT REFERENCES passages(id),
+		    type TEXT,
+		    difficulty TEXT,
+		    used_at TIMESTAMPTZ,
+		    quality_score DECIMAL(4,3),
+		    times_served INTEGER DEFAULT 0,
+		    correct_count INTEGER DEFAULT 0,
+		    content_hash TEXT,
+		    is_verified BOOLEAN DEFAULT FALSE,
+		    updated_at TIMESTAMPTZ DEFAULT NOW(),
+		    created_at TIMESTAMPTZ DEFAULT NOW()
+		);`,
+		// Add indexes if possible, though strict SQL block here is simpler.
+		`CREATE INDEX IF NOT EXISTS idx_question_bank_skill_id ON question_bank(skill_id);`,
 	}
 
 	for _, query := range queries {

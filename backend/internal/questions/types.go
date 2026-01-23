@@ -9,17 +9,33 @@ import (
 
 // Question represents a quiz question
 type Question struct {
-	ID            string    `json:"id"`
-	Text          string    `json:"text"`
-	Type          string    `json:"type"`
-	Options       []Option  `json:"options"`
-	CorrectAnswer string    `json:"correctAnswer"`
-	Explanation   string    `json:"explanation,omitempty"`
-	SkillID       string    `json:"skillId"`
-	Section       string    `json:"section"`
-	Source        string    `json:"source"`     // "ai", "static", "database"
-	Difficulty    string    `json:"difficulty"` // "easy", "medium", "hard"
-	CreatedAt     time.Time `json:"createdAt"`
+	ID             string    `json:"id"`
+	Text           string    `json:"text"`
+	Type           string    `json:"type"`
+	Options        []Option  `json:"options"`
+	CorrectAnswer  string    `json:"correctAnswer"`
+	Explanation    string    `json:"explanation,omitempty"`
+	SkillID        string    `json:"skillId"`
+	Section        string    `json:"section"`
+	Source         string    `json:"source"`     // "ai", "static", "database"
+	Difficulty     string    `json:"difficulty"` // "easy", "medium", "hard"
+	PassageID      string    `json:"passageId,omitempty"`
+	PassageText    string    `json:"passageText,omitempty"` // Transient field for new generations
+	PatternTip     string    `json:"patternTip,omitempty"`
+	Hints          []string  `json:"hints,omitempty"`
+	ReferencedText string    `json:"referencedText,omitempty"`
+	QualityScore   float64   `json:"qualityScore"`
+	TimesServed    int       `json:"timesServed"`
+	ContentHash    string    `json:"contentHash"`
+	IsVerified     bool      `json:"isVerified"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+type Passage struct {
+	ID        string    `json:"id"`
+	Text      string    `json:"text"`
+	Topic     string    `json:"topic"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 type Option struct {
@@ -52,6 +68,7 @@ type Repository interface {
 	GetBySkill(ctx context.Context, skillID string, limit int, excludeUsed bool) ([]Question, error)
 	GetPassages(ctx context.Context, skillID string, maxPassages int) ([]map[string]any, error)
 	Save(ctx context.Context, q Question) (Question, error)
+	SavePassage(ctx context.Context, p Passage) error
 	MarkUsed(ctx context.Context, ids []string) error
 	MarkUsedByUser(ctx context.Context, userID string, ids []string) error
 	GetUsedByUser(ctx context.Context, userID, skillID string) (map[string]bool, error)

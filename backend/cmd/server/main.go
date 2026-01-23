@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
@@ -13,7 +15,6 @@ import (
 	"streamquiz-backend/internal/database"
 	"streamquiz-backend/internal/manager"
 	"streamquiz-backend/internal/questions"
-	"streamquiz-backend/internal/service"
 )
 
 func main() {
@@ -38,17 +39,14 @@ func main() {
 	database.Init()
 	defer database.Close()
 
-	// Init Manager
-	manager.Init()
-
 	// Init Questions Service
 	qRepo := questions.NewPgRepository()
 	aiAdapter := questions.NewAIAdapter()
 	// No static questions for now, using DB and AI
 	qService := questions.NewService(qRepo, nil, questions.HybridStrategy{StaticPct: 0, DBPct: 50, AIPct: 50}, aiAdapter, nil, nil, nil)
 
-	// Inject qService into global manager if needed, or just use it in handlers.
-	// For simplicity, let's keep it local to main or make a global var if we had to split handlers
+	// Init Quiz Manager
+	quizMgr := manager.NewQuizManager(&manager.ServiceQuizGenerator{})
 
 	mux := http.NewServeMux()
 
@@ -62,9 +60,6 @@ func main() {
 			http.Error(w, "Invalid body", http.StatusBadRequest)
 			return
 		}
-
-		// Set UserID if available from auth (placeholder)
-		// req.UserID = ...
 
 		res, err := qService.Hybrid(r.Context(), req)
 		if err != nil {
@@ -88,17 +83,201 @@ func main() {
 			return
 		}
 
-		qService.Replenish(r.Context(), req.SkillID, req.Section, req.Count)
+		// Run in background with a detached context so it persists after request
+		// But Replenish expects a context that CAN be cancelled or timed out.
+		// We should use a background context with timeout.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			qService.Replenish(ctx, req.SkillID, req.Section, req.Count)
+		}()
+
 		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(map[string]string{"status": "job_started"})
 	})
 
-	// Old endpoint (optional, keep for reference or remove)
-	mux.HandleFunc("/api/generate-quiz", handleGenerateQuiz)
-
 	// New Batch Endpoints
-	mux.HandleFunc("/api/quiz/start", handleStartSession)
-	mux.HandleFunc("/api/quiz/next", handleNextQuiz)
+	mux.HandleFunc("/api/quiz/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Topic   string `json:"topic"`
+			Section string `json:"section"`
+			Count   int    `json:"count"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid body", http.StatusBadRequest)
+			return
+		}
+
+		if req.Count <= 0 {
+			req.Count = 1
+		}
+		if req.Count > 10 {
+			req.Count = 10 // Safety limit
+		}
+
+		// Pass context from request? No, StartSession spawns background work.
+		// But we check limiter on caller context if we want.
+		// For now, pass r.Context() to StartSession if it uses it for initial setup,
+		// but remember StartSession now uses detached context for the goroutine.
+		sessionID := quizMgr.StartSession(r.Context(), req.Topic, req.Section, req.Count)
+
+		// NON-BLOCKING: Return ID immediately. Client must poll /next.
+		resp := map[string]interface{}{
+			"sessionId": sessionID,
+			"remaining": req.Count,
+			"status":    "started",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	mux.HandleFunc("/api/quiz/next", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		sessionID := r.URL.Query().Get("sessionId")
+		if sessionID == "" {
+			http.Error(w, "sessionId required", http.StatusBadRequest)
+			return
+		}
+
+		quiz := quizMgr.GetNextQuiz(sessionID)
+		if quiz == nil {
+			// Check if session exists or errors?
+			// GetNextQuiz returns nil when channel closed (done).
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(quiz)
+	})
+
+	mux.HandleFunc("/api/quiz/stream", func(w http.ResponseWriter, r *http.Request) {
+		// SSE requires GET
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		sessionID := r.URL.Query().Get("sessionId")
+		if sessionID == "" {
+			http.Error(w, "sessionId required", http.StatusBadRequest)
+			return
+		}
+
+		// Set SSE headers
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*") // Handle CORS manually if needed, or rely on middleware
+
+		// Flush headers immediately
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		flusher.Flush()
+
+		// Stream loop
+		// We listen for client disconnect via r.Context()
+		ctx := r.Context()
+
+		for {
+			// Check if client disconnected
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// GetNextQuiz blocks if no quiz is ready, or returns nil if done/closed
+			// Note: This blocks until a quiz is ready. If client disconnects while we wait here,
+			// we won't know until GetNextQuiz returns. Ideally GetNextQuiz should accept Context.
+			// But since sessions have timeouts and generation has limits, it won't block forever.
+			quiz := quizMgr.GetNextQuiz(sessionID)
+			if quiz == nil {
+				// End of stream
+				// Send a specific event or just close connection?
+				// Usually we can send a "done" event
+				fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+				flusher.Flush()
+				return
+			}
+
+			// Marshal quiz to JSON
+			data, err := json.Marshal(quiz)
+			if err != nil {
+				log.Printf("Error marshaling quiz for stream: %v", err)
+				continue
+			}
+
+			// Write SSE event
+			// Default event type is "message"
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	})
+
+	mux.HandleFunc("/api/quiz/submit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			SessionID string            `json:"sessionId"`
+			Answers   map[string]string `json:"answers"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid body", http.StatusBadRequest)
+			return
+		}
+
+		score, err := quizMgr.SubmitQuiz(req.SessionID, req.Answers)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "submitted",
+			"score":  score,
+		})
+	})
+
+	mux.HandleFunc("/api/quiz/results", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		sessionID := r.URL.Query().Get("sessionId")
+		if sessionID == "" {
+			http.Error(w, "sessionId required", http.StatusBadRequest)
+			return
+		}
+
+		result, err := quizMgr.GetQuizResult(sessionID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
 
 	// CORS setup
 	c := cors.New(cors.Options{
@@ -118,108 +297,11 @@ func main() {
 	}
 
 	fmt.Printf("Server starting on port %s...\n", port)
+	// Use qService and quizMgr to silence unused variable errors if logic was different?
+	// They are used in closures.
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func handleStartSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req struct {
-		Topic   string `json:"topic"`
-		Section string `json:"section"`
-		Count   int    `json:"count"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid body", http.StatusBadRequest)
-		return
-	}
-
-	if req.Count <= 0 {
-		req.Count = 1
-	}
-	if req.Count > 10 {
-		req.Count = 10 // Safety limit
-	}
-
-	sessionID := manager.GlobalManager.StartSession(req.Topic, req.Section, req.Count)
-
-	// Wait for the FIRST quiz to be ready so the user doesn't get an empty "next" immediately
-	// Or we can just return ID and let the client poll "next".
-	// UX-wise: client needs 1 immediately.
-	// So let's peek/pop one immediately here?
-	// Use GetNextQuiz which blocks until 1 is available.
-	firstQuiz := manager.GlobalManager.GetNextQuiz(sessionID)
-	if firstQuiz == nil {
-		http.Error(w, "Failed to generate initial quiz", http.StatusInternalServerError)
-		return
-	}
-
-	resp := map[string]interface{}{
-		"sessionId": sessionID,
-		"firstQuiz": firstQuiz,
-		"remaining": req.Count - 1,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func handleNextQuiz(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	sessionID := r.URL.Query().Get("sessionId")
-	if sessionID == "" {
-		http.Error(w, "sessionId required", http.StatusBadRequest)
-		return
-	}
-
-	quiz := manager.GlobalManager.GetNextQuiz(sessionID)
-	if quiz == nil {
-		// Could mean done or session invalid
-		// We return generic done for simplicity
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(quiz)
-}
-
-func handleGenerateQuiz(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req service.QuizRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.Topic == "" {
-		http.Error(w, "Topic is required", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Generating quiz for topic: %s, section: %s", req.Topic, req.Section)
-
-	quiz, err := service.GenerateQuiz(req.Topic, req.Section)
-	if err != nil {
-		log.Printf("Error generating quiz: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to generate quiz: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(quiz)
-}
+// Remove standalone handlers handleStartSession/handleNextQuiz/handleGenerateQuiz to avoid confusion/unused errors

@@ -1,6 +1,7 @@
 export type QuestionType = 'sentence_completion' | 'error_identification' | 'reading_comprehension';
 
 export interface QuizData {
+  id?: string;
   type: QuestionType;
   question: string;
   options: { key: string; text: string }[];

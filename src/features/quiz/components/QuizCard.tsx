@@ -43,7 +43,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
   const renderPartBText = (text: string) => {
     const parts = text.split(/(\{[A-D]\}.*?\{\/??[A-D]\})/g);
     return (
-      <p className="font-serif text-lg md:text-xl leading-loose text-slate-800">
+      <p className="font-serif text-base md:text-lg leading-relaxed text-slate-800">
         {parts.map((part, idx) => {
           const match = part.match(/\{([A-D])\}(.*?)\{\/??[A-D]\}/);
           if (match) {
@@ -80,9 +80,9 @@ export const QuizCard: React.FC<QuizCardProps> = ({
   };
 
   const renderPartAText = (text: string) => {
-    const displayText = text.replace(/_{2,}/g, '<span class="inline-block border-b-2 border-slate-800 w-16 mx-1">&nbsp;</span>');
+    const displayText = text.replace(/_{2,}/g, '<span class="inline-block border-b border-slate-800 w-12 mx-1">&nbsp;</span>');
     return (
-      <div className="font-serif text-lg md:text-xl leading-loose text-slate-800">
+      <div className="font-serif text-base md:text-lg leading-relaxed text-slate-800">
         {isTyping && !isAnswered ? (
           <Typewriter
             text={text.replace(/_{2,}/g, '_______')}
@@ -123,9 +123,9 @@ export const QuizCard: React.FC<QuizCardProps> = ({
       </div>
 
       <div className={`${structureTab === 'question' ? 'block' : 'hidden'} md:block`}>
-        <div className="bg-white rounded-[24px] shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
+        <div className="bg-white rounded-[20px] shadow-lg shadow-slate-200/40 border border-slate-100 overflow-hidden">
 
-          <div className="p-6 md:p-8 border-b border-slate-50 bg-gradient-to-b from-blue-50/30 to-transparent">
+          <div className="p-5 md:p-6 border-b border-slate-50 bg-gradient-to-b from-blue-50/20 to-transparent">
             <div className="mb-4 flex items-center gap-2">
               <span className={`inline-flex items-center px-3 py-1 text-[10px] font-bold rounded-full uppercase tracking-wider border ${badge.class}`}>
                 {isErrorIdentification ? <Loader2 className="w-3 h-3 mr-1.5" /> : <BookOpen className="w-3 h-3 mr-1.5" />}
@@ -136,7 +136,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
               </span>
             </div>
 
-            <div className="min-h-[120px] flex items-center">
+            <div className="min-h-[80px] flex items-center">
               {isErrorIdentification ? (
                 <div className="animate-in fade-in duration-700 w-full">
                   {renderPartBText(data.question)}
@@ -147,14 +147,14 @@ export const QuizCard: React.FC<QuizCardProps> = ({
             </div>
           </div>
 
-          <div className="p-6 md:p-8 bg-white">
-            <div className="grid gap-3 grid-cols-1">
+          <div className="p-5 md:p-6 bg-white">
+            <div className="grid gap-2 grid-cols-1">
               {data.options.map((opt, idx) => {
                 const isSelected = selectedOptionKey === opt.key;
                 const isTheCorrectOne = data.correctAnswer === opt.key;
                 const isEliminated = eliminatedKeys.includes(opt.key);
 
-                let btnClass = "relative w-full text-left py-4 px-5 border rounded-xl transition-all duration-200 group flex items-center";
+                let btnClass = "relative w-full text-left py-3 px-4 border rounded-xl transition-all duration-200 group flex items-center";
 
                 if (isAnswered) {
                   if (isTheCorrectOne) {
@@ -176,19 +176,19 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                   <button
                     key={opt.key}
                     onClick={() => !isAnswered && !isEliminated && onAnswer(opt.key)}
-                    disabled={isAnswered || isEliminated}
+                    disabled={isAnswered}
                     style={{ animationDelay: `${idx * 100}ms` }}
                     className={`${btnClass} animate-in fade-in slide-in-from-bottom-2 fill-mode-backwards`}
                   >
                     <span className={`flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg font-bold text-sm mr-4 border transition-colors ${isAnswered && isTheCorrectOne ? 'bg-blue-600 border-blue-600 text-white' :
-                        isAnswered && isSelected ? 'bg-orange-500 border-orange-500 text-white' :
-                          isEliminated ? 'bg-slate-100 border-slate-200 text-slate-300' :
-                            'bg-white border-slate-200 text-slate-500 group-hover:border-blue-400 group-hover:text-blue-600'
+                      isAnswered && isSelected ? 'bg-orange-500 border-orange-500 text-white' :
+                        isEliminated ? 'bg-slate-100 border-slate-200 text-slate-300' :
+                          'bg-white border-slate-200 text-slate-500 group-hover:border-blue-400 group-hover:text-blue-600'
                       }`}>
                       {opt.key}
                     </span>
 
-                    <span className={`text-base font-medium flex-1 ${isEliminated ? 'line-through decoration-slate-300' : 'text-slate-700'}`}>
+                    <span className={`text-sm font-medium flex-1 ${isEliminated ? 'line-through decoration-slate-300' : 'text-slate-700'}`}>
                       {opt.text}
                     </span>
 
@@ -196,8 +196,8 @@ export const QuizCard: React.FC<QuizCardProps> = ({
                       <div
                         onClick={(e) => toggleElimination(e, opt.key)}
                         className={`absolute right-4 p-2 rounded-full transition-all z-10 ${isEliminated
-                            ? 'text-orange-500 bg-orange-50 hover:bg-orange-100 opacity-100'
-                            : 'text-slate-300 hover:bg-slate-100 hover:text-slate-500 opacity-0 group-hover:opacity-100'
+                          ? 'text-orange-500 bg-orange-50 hover:bg-orange-100 opacity-100'
+                          : 'text-slate-300 hover:bg-slate-100 hover:text-slate-500 opacity-0 group-hover:opacity-100'
                           }`}
                         title="Eliminate Answer"
                       >
@@ -249,7 +249,7 @@ export const QuizCard: React.FC<QuizCardProps> = ({
             )}
 
             <div className="prose prose-sm prose-slate max-w-none text-slate-600 leading-relaxed bg-slate-50/50 p-4 rounded-xl border border-slate-100">
-              <Typewriter text={data.explanation} speed={15} showCursor={true} />
+              <Typewriter text={data.explanation || "No explanation provided for this question."} speed={15} showCursor={true} />
             </div>
 
             <div className="mt-6 flex justify-end">

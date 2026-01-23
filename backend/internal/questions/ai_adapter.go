@@ -31,7 +31,7 @@ func (a *AIAdapter) GenerateQuestions(ctx context.Context, skillID, section stri
 	} else {
 		formatInstructions = "For 'sentence_completion', use '____' (4 underscores) to denote the blank. For 'error_identification', enclose the 4 options in the sentence with {A}...{/A}, {B}...{/B}, {C}...{/C}, {D}...{/D}."
 	}
-	userPrompt := fmt.Sprintf("%s\n%s\nGenerate %d questions in JSON format. Output a JSON array of objects with keys: text, options (array of 4 objects with keys A, B, C, D), correctAnswer, explanation. Ensure there are exactly 4 options per question.", strategy.TaskPrompt, formatInstructions, count)
+	userPrompt := fmt.Sprintf("%s\n%s\nGenerate %d questions in JSON format. Output a JSON array of objects with keys: text, options (array of 4 objects with keys A, B, C, D), correctAnswer, explanation. Ensure there are exactly 4 options per question. The explanation field is REQUIRED and must explain why the correct answer is right and why others are wrong.", strategy.TaskPrompt, formatInstructions, count)
 
 	// We need access to the LLM client.
 	// Option 1: internal/service exposes a global client? No, bad practice.
@@ -51,66 +51,78 @@ func (a *AIAdapter) GenerateQuestions(ctx context.Context, skillID, section stri
 	type FlexibleQuestion struct {
 		Text          string      `json:"text"`
 		Question      string      `json:"question"` // Alias
-		Options       interface{} `json:"options"`  // Can be []FlexibleOption OR map[string]string
+		PassageText   string      `json:"passageText,omitempty"`
+		Options       interface{} `json:"options"` // Can be []FlexibleOption OR map[string]string
 		CorrectAnswer string      `json:"correctAnswer"`
 		Explanation   string      `json:"explanation"`
 	}
 
 	var rawQs []FlexibleQuestion
-	// Try unmarshalling as array first
-	err = json.Unmarshal([]byte(resp), &rawQs) // Use '=' as err is already declared
-	if err != nil {
-		// Try parsing as concatenated JSON objects (NDJSON-like but maybe just loose)
-		decoder := json.NewDecoder(strings.NewReader(resp))
-		for decoder.More() {
-			var single FlexibleQuestion
-			if err := decoder.Decode(&single); err == nil {
-				// Only accept if it looks like a question
-				if single.Text != "" || single.Question != "" {
-					rawQs = append(rawQs, single)
+
+	// STRATEGY 1: Unmarshal as Array
+	if err := json.Unmarshal([]byte(resp), &rawQs); err != nil {
+		// STRATEGY 2: Unmarshal as Wrapper Object {"questions": [...]}
+		var wrapper struct {
+			Questions []FlexibleQuestion `json:"questions"`
+		}
+		if errWrap := json.Unmarshal([]byte(resp), &wrapper); errWrap == nil && len(wrapper.Questions) > 0 {
+			rawQs = wrapper.Questions
+		} else {
+			// STRATEGY 3: Unmarshal as Object Map with Single Values (e.g., {"question1": {...}})
+			// OR Object Map with ARRAY Values (e.g., {"sentence_completion": [...]})
+			// We check for Array Values FIRST as that seems to be the current issue.
+			var categoryMap map[string][]FlexibleQuestion
+			if errCat := json.Unmarshal([]byte(resp), &categoryMap); errCat == nil && len(categoryMap) > 0 {
+				for _, list := range categoryMap {
+					rawQs = append(rawQs, list...)
+				}
+			} else {
+				// Fallback to Single Value Map
+				var rawMap map[string]FlexibleQuestion
+				if errMap := json.Unmarshal([]byte(resp), &rawMap); errMap == nil && len(rawMap) > 0 {
+					for _, v := range rawMap {
+						rawQs = append(rawQs, v)
+					}
 				} else {
-					// It parsed but is empty, likely a wrapper object {"questions": [...]}
-					// If we haven't found any valid questions yet, try parsing as wrapper
-					if len(rawQs) == 0 {
-						var wrapper struct {
-							Questions []FlexibleQuestion `json:"questions"`
-						}
-						// re-parse properly from full string since token was consumed
-						if err2 := json.Unmarshal([]byte(resp), &wrapper); err2 == nil && len(wrapper.Questions) > 0 {
-							rawQs = wrapper.Questions
+					// STRATEGY 4: NDJSON / Concatenated JSON Objects
+					decoder := json.NewDecoder(strings.NewReader(resp))
+					for decoder.More() {
+						var single FlexibleQuestion
+						if err := decoder.Decode(&single); err == nil {
+							if single.Text != "" || single.Question != "" {
+								rawQs = append(rawQs, single)
+							}
+						} else {
 							break
 						}
 					}
 				}
-			} else {
-				// If we have some questions, maybe ignore the rest?
-				if len(rawQs) > 0 {
-					break
-				}
-				// If we haven't found any, try the wrapper method one last time
-				var wrapper struct {
-					Questions []FlexibleQuestion `json:"questions"`
-				}
-				if err2 := json.Unmarshal([]byte(resp), &wrapper); err2 == nil {
-					rawQs = wrapper.Questions
-					break
-				}
-				return nil, fmt.Errorf("failed to parse AI response: %v. Raw: %s", err, resp)
 			}
 		}
 	}
 
 	// Convert FlexibleQuestion to Question
 	qs := make([]Question, 0, len(rawQs))
-	for _, fq := range rawQs {
+	for i, fq := range rawQs {
 		text := fq.Text
 		if text == "" {
 			text = fq.Question
 		}
+
+		// DEBUG: Log first question details
+		if i == 0 {
+			fmt.Printf("DEBUG: First Question Parse. Text len: %d, Explanation: '%s'\n", len(text), fq.Explanation)
+		}
+
 		q := Question{
 			Text:          text,
 			CorrectAnswer: fq.CorrectAnswer,
 			Explanation:   fq.Explanation,
+			PassageText:   fq.PassageText,
+		}
+
+		if q.Explanation == "" {
+			q.Explanation = "No detailed explanation provided by AI."
 		}
 
 		// Handle Options

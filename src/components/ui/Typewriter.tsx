@@ -14,16 +14,16 @@ interface TypewriterProps {
  * Simulates streaming text effect.
  * Now robust against re-renders and callback changes.
  */
-export const Typewriter: React.FC<TypewriterProps> = ({ 
-  text, 
-  speed = 20, 
-  onComplete, 
+export const Typewriter: React.FC<TypewriterProps> = ({
+  text,
+  speed = 20,
+  onComplete,
   className = "",
   showCursor = true
 }) => {
   const [displayedText, setDisplayedText] = useState('');
   const [isDone, setIsDone] = useState(false);
-  
+
   const indexRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const onCompleteRef = useRef(onComplete);
@@ -38,20 +38,21 @@ export const Typewriter: React.FC<TypewriterProps> = ({
     setDisplayedText('');
     setIsDone(false);
     indexRef.current = 0;
-    
+
     if (timerRef.current) clearInterval(timerRef.current);
 
-    // If speed is 0, show immediately
-    if (speed === 0) {
-      setDisplayedText(text);
+    // If speed is 0 or no text, show immediately
+    const safeText = text || "";
+    if (speed === 0 || !safeText) {
+      setDisplayedText(safeText);
       setIsDone(true);
       if (onCompleteRef.current) onCompleteRef.current();
       return;
     }
 
     timerRef.current = setInterval(() => {
-      if (indexRef.current < text.length) {
-        setDisplayedText((prev) => prev + text.charAt(indexRef.current));
+      if (indexRef.current < safeText.length) {
+        setDisplayedText((prev) => prev + safeText.charAt(indexRef.current));
         indexRef.current++;
       } else {
         if (timerRef.current) clearInterval(timerRef.current);

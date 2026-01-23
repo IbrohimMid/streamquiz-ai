@@ -7,13 +7,20 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+
+	"github.com/google/uuid"
 )
 
 const (
+	OllamaAPIURL     = "http://localhost:11434/api/chat"
 	OpenRouterAPIURL = "https://openrouter.ai/api/v1/chat/completions"
 )
 
-var Models = []string{
+var OllamaModels = []string{
+	"llama3.2",
+}
+
+var OpenRouterModels = []string{
 	"xiaomi/mimo-v2-flash:free",
 	"qwen/qwen3-next-80b-a3b-instruct:free",
 	"meta-llama/llama-3.1-405b-instruct:free",
@@ -25,15 +32,17 @@ type QuizRequest struct {
 }
 
 type QuizResponse struct {
-	Type          string   `json:"type"`
-	PassageText   string   `json:"passageText,omitempty"`
-	Question      string   `json:"question"`
-	Options       []Option `json:"options"`
-	CorrectAnswer string   `json:"correctAnswer"`
-	Explanation   string   `json:"explanation"`
-	PatternTip    string   `json:"patternTip"`
-	Hints         []string `json:"hints,omitempty"`
-	Section       string   `json:"section,omitempty"`
+	ID             string   `json:"id"`
+	Type           string   `json:"type"`
+	PassageText    string   `json:"passageText,omitempty"`
+	Text           string   `json:"text"` // Standardized to "text" to match Question struct
+	Options        []Option `json:"options"`
+	CorrectAnswer  string   `json:"correctAnswer"`
+	Explanation    string   `json:"explanation"`
+	PatternTip     string   `json:"patternTip"`
+	Hints          []string `json:"hints,omitempty"`
+	ReferencedText string   `json:"referencedText,omitempty"`
+	Section        string   `json:"section,omitempty"`
 }
 
 type Option struct {
@@ -42,45 +51,76 @@ type Option struct {
 }
 
 func QueryLLM(ctx context.Context, systemInstruction, userPrompt string) (string, error) {
+	// 1. Try OpenRouter (Cloud) - PRIMARY
+	fmt.Println("Attempting to generate with OpenRouter (Main)...")
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
-	if apiKey == "" {
-		return "", fmt.Errorf("OPENROUTER_API_KEY is missing")
-	}
-
 	var lastErr error
 
-	for _, model := range Models {
-		content, err := queryModel(ctx, apiKey, model, systemInstruction, userPrompt)
-		if err == nil {
-			return content, nil
+	if apiKey != "" {
+		for _, model := range OpenRouterModels {
+			content, err := queryModel(ctx, "openrouter", OpenRouterAPIURL, apiKey, model, systemInstruction, userPrompt)
+			if err == nil {
+				fmt.Printf("Success with OpenRouter model: %s\n", model)
+				return content, nil
+			}
+			fmt.Printf("OpenRouter model %s failed: %v. Trying next...\n", model, err)
+			lastErr = err
 		}
-		// Log the error but continue to next model
-		fmt.Printf("Model %s failed: %v. Trying next...\n", model, err)
-		lastErr = err
+	} else {
+		fmt.Println("OPENROUTER_API_KEY missing, skipping OpenRouter.")
 	}
 
-	return "", fmt.Errorf("all models failed. Last error: %v", lastErr)
+	// 2. Fallback to Ollama (Local)
+	fmt.Println("Falling back to Ollama (Local)...")
+	for _, model := range OllamaModels {
+		content, err := queryModel(ctx, "ollama", OllamaAPIURL, "", model, systemInstruction, userPrompt)
+		if err == nil {
+			fmt.Printf("Success with Ollama model: %s\n", model)
+			return content, nil
+		}
+		fmt.Printf("Ollama model %s failed: %v\n", model, err)
+	}
+
+	return "", fmt.Errorf("all providers failed. Last OpenRouter error: %v", lastErr)
 }
 
-func queryModel(ctx context.Context, apiKey, model, systemInstruction, userPrompt string) (string, error) {
-	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemInstruction},
-			{"role": "user", "content": userPrompt},
-		},
-		"response_format": map[string]string{"type": "json_object"},
-	})
+func queryModel(ctx context.Context, provider, apiURL, apiKey, model, systemInstruction, userPrompt string) (string, error) {
+	var reqBody []byte
+	var err error
 
-	req, err := http.NewRequestWithContext(ctx, "POST", OpenRouterAPIURL, bytes.NewBuffer(reqBody))
+	if provider == "ollama" {
+		reqBody, _ = json.Marshal(map[string]interface{}{
+			"model": model,
+			"messages": []map[string]string{
+				{"role": "system", "content": systemInstruction},
+				{"role": "user", "content": userPrompt},
+			},
+			"stream": false,
+			"format": "json",
+		})
+	} else {
+		// OpenRouter
+		reqBody, _ = json.Marshal(map[string]interface{}{
+			"model": model,
+			"messages": []map[string]string{
+				{"role": "system", "content": systemInstruction},
+				{"role": "user", "content": userPrompt},
+			},
+			"response_format": map[string]string{"type": "json_object"},
+		})
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(reqBody))
 	if err != nil {
 		return "", err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("HTTP-Referer", "http://localhost:5173")
-	req.Header.Set("X-Title", "StreamQuiz AI")
+	if provider == "openrouter" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("HTTP-Referer", "http://localhost:5173")
+		req.Header.Set("X-Title", "StreamQuiz AI")
+	}
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -90,43 +130,60 @@ func queryModel(ctx context.Context, apiKey, model, systemInstruction, userPromp
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenRouter API Error: %d", resp.StatusCode)
+		return "", fmt.Errorf("API Error (%s): %d", provider, resp.StatusCode)
 	}
 
-	var aiResp struct {
-		Choices []struct {
+	var content string
+
+	if provider == "ollama" {
+		var aiResp struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
-		} `json:"choices"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+			return "", err
+		}
+		content = aiResp.Message.Content
+	} else {
+		var aiResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+			return "", err
+		}
+		if len(aiResp.Choices) == 0 {
+			return "", fmt.Errorf("no content received from AI")
+		}
+		content = aiResp.Choices[0].Message.Content
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
-		return "", err
+	if content == "" {
+		return "", fmt.Errorf("empty content received")
 	}
 
-	if len(aiResp.Choices) == 0 {
-		return "", fmt.Errorf("no content received from AI")
-	}
-
-	return aiResp.Choices[0].Message.Content, nil
+	return content, nil
 }
 
 func GenerateQuiz(topic, section string) (*QuizResponse, error) {
-	systemInstruction := "You are a helpful AI that generates TOEFL exercises. You must strictly output valid JSON."
-	var prompt string
+	// Try to get a specific strategy first
+	strategy := GetSkillStrategy(topic)
 
-	if section == "READING" {
-		prompt = fmt.Sprintf(`Generate a TOEFL Reading Comprehension exercise for the topic: "%s".
-      
-      1. Write an academic reading passage (approx 150-200 words) suitable for TOEFL. Topics can be History, Science, Art, etc.
-      2. Create ONE difficult multiple-choice question based on that passage and the specific skill mentioned in the topic.
-      
+	systemInstruction := strategy.SystemPrompt
+	taskPrompt := strategy.TaskPrompt
+
+	// Append JSON Schema requirement strictly
+	prompt := fmt.Sprintf(`%s
+
       Return the response in JSON format matching this schema:
       {
-          "type": "reading_comprehension",
-          "passageText": "string",
-          "question": "string",
+          "type": "sentence_completion", "error_identification", or "reading_comprehension",
+          "passageText": "string (only for reading)",
+          "text": "string (the main question text)",
           "options": [
               {"key": "A", "text": "string"},
               {"key": "B", "text": "string"},
@@ -135,37 +192,12 @@ func GenerateQuiz(topic, section string) (*QuizResponse, error) {
           ],
           "correctAnswer": "string (A, B, C, or D)",
           "explanation": "string",
-          "patternTip": "string (e.g., 'Scan for Keywords')",
-          "hints": ["string"]
+          "patternTip": "string",
+          "hints": ["string"],
+          "referencedText": "string (optional, text being tested)"
       }
       
-      The 'patternTip' should be a specific reading strategy.`, topic)
-	} else {
-		prompt = fmt.Sprintf(`Generate a difficult %s multiple-choice question for TOEFL Structure section.
-      
-      It must be one of two types:
-      1. 'sentence_completion': A sentence with a blank marked as "____".
-      2. 'error_identification': A sentence with 4 underlined parts marked as {A}text{/A}, {B}text{/B}, {C}text{/C}, {D}text{/D}. One of them is grammatically incorrect.
-
-      Return the response in JSON format matching this schema:
-      {
-          "type": "sentence_completion" OR "error_identification",
-          "question": "string",
-          "options": [
-              {"key": "A", "text": "string"},
-              {"key": "B", "text": "string"},
-              {"key": "C", "text": "string"},
-              {"key": "D", "text": "string"}
-          ],
-          "correctAnswer": "string (A, B, C, or D)",
-          "explanation": "string",
-          "patternTip": "string (e.g., 'Subject-Verb Agreement')"
-      }
-      
-      For 'options', provide an array of objects with 'key' (A, B, C, D) and 'text'. 
-      For error_identification, the 'text' of the option should match the text inside the braces.
-      Include a 'patternTip' which is a very short, catchy grammar rule name.`, topic)
-	}
+      Ensure 'options' has exactly 4 items.`, taskPrompt)
 
 	// Call QueryLLM with background context since GenerateQuiz doesn't take one
 	content, err := QueryLLM(context.Background(), systemInstruction, prompt)
@@ -178,6 +210,7 @@ func GenerateQuiz(topic, section string) (*QuizResponse, error) {
 		return nil, fmt.Errorf("failed to parse AI response: %v", err)
 	}
 
+	quizData.ID = uuid.New().String()
 	quizData.Section = section
 	return &quizData, nil
 }
