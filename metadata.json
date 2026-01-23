@@ -1,0 +1,5 @@
+{
+  "name": "StreamQuiz AI",
+  "description": "An interactive AI-powered quiz application featuring smooth text streaming animations and dynamic content generation using Google Gemini.",
+  "requestFramePermissions": []
+}
